@@ -25,7 +25,14 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
-from anthropic import Anthropic
+from anthropic import (
+    Anthropic,
+    APIConnectionError,
+    APIStatusError,
+    AuthenticationError,
+    BadRequestError,
+    NotFoundError,
+)
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -238,14 +245,20 @@ def generate_post(client: Anthropic, rubric: str, history: list[dict]) -> dict:
     """Возвращает {'title','text','hashtags'}. До 3 попыток на брак/повтор."""
     for attempt in range(1, 4):
         def call():
-            return client.messages.create(
-                model=config.MODEL,
-                max_tokens=config.MAX_TOKENS,
-                system=build_system_prompt(),
-                messages=[{"role": "user", "content": build_user_prompt(rubric, history)}],
-                # temperature намеренно не задаём: claude-sonnet-5 и новее
-                # отклоняют нестандартные параметры сэмплирования
-            )
+            try:
+                return client.messages.create(
+                    model=config.MODEL,
+                    max_tokens=config.MAX_TOKENS,
+                    system=build_system_prompt(),
+                    messages=[{"role": "user", "content": build_user_prompt(rubric, history)}],
+                    # temperature намеренно не задаём: claude-sonnet-5 и новее
+                    # отклоняют нестандартные параметры сэмплирования
+                )
+            except APIStatusError as exc:
+                # 4xx кроме 429 — про ключ, баланс или модель: повтор не поможет
+                if 400 <= exc.status_code < 500 and exc.status_code != 429:
+                    raise PermanentError(f"Claude: {exc.message}") from exc
+                raise
 
         resp = retry(call, what="запрос к Claude")
         raw = "".join(b.text for b in resp.content if b.type == "text")
@@ -422,6 +435,46 @@ def check_post_rights(bot_id: int, chat: dict) -> None:
     log.info("Права на публикацию: есть")
 
 
+def check_claude() -> None:
+    """Пробный запрос к Claude — ловим типовые отказы и объясняем их по-человечески."""
+    client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    try:
+        client.messages.create(
+            model=config.MODEL, max_tokens=16,
+            messages=[{"role": "user", "content": "ответь одним словом: ок"}],
+        )
+    except AuthenticationError as exc:
+        raise SystemExit(
+            "Anthropic не принимает ключ ANTHROPIC_API_KEY.\n"
+            "Чаще всего он скопирован с пробелом или переносом строки, либо отозван.\n"
+            "Новый ключ: https://platform.claude.com → Settings → API keys → Create Key.\n"
+            "Ключ начинается с sk-ant- и показывается только один раз."
+        ) from exc
+    except BadRequestError as exc:
+        if "credit balance" in str(exc).lower():
+            raise SystemExit(
+                "На балансе Anthropic нет средств, поэтому API отклоняет запросы.\n\n"
+                "Пополни: https://platform.claude.com → Plans & Billing → Buy credits.\n"
+                "Минимальных $5 хватает примерно на два месяца работы бота\n"
+                "при трёх постах в день на модели " + config.MODEL + ".\n\n"
+                "Учти: подписка Claude Pro или Max на API не распространяется —\n"
+                "это отдельный счёт, кредиты для API покупаются отдельно."
+            ) from exc
+        raise SystemExit(f"Anthropic отклонил запрос: {exc.message}") from exc
+    except NotFoundError as exc:
+        raise SystemExit(
+            f"Anthropic не знает модель «{config.MODEL}».\n"
+            "Проверь MODEL в config.py. Рабочие варианты: claude-sonnet-5,\n"
+            "claude-opus-5, claude-haiku-4-5."
+        ) from exc
+    except APIConnectionError as exc:
+        raise SystemExit(
+            "Не достучаться до api.anthropic.com — похоже, проблема с сетью сервера.\n"
+            "Проверь интернет и не блокирует ли фаервол исходящие HTTPS-соединения."
+        ) from exc
+    log.info("Claude API отвечает, модель %s", config.MODEL)
+
+
 def do_check() -> None:
     me = telegram_call("getMe", {})
     log.info("Бот: @%s", me["username"])
@@ -429,12 +482,7 @@ def do_check() -> None:
     log.info("Канал: %s (id=%s)", chat.get("title"), chat.get("id"))
     check_post_rights(me["id"], chat)
 
-    client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    client.messages.create(
-        model=config.MODEL, max_tokens=16,
-        messages=[{"role": "user", "content": "ответь одним словом: ок"}],
-    )
-    log.info("Claude API отвечает, модель %s", config.MODEL)
+    check_claude()
     log.info("Всё в порядке. Можно запускать: python bot.py")
 
 
