@@ -54,6 +54,63 @@ def setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+TME_LINK = re.compile(r"^(?:https?://)?(?:www\.)?t(?:elegram)?\.me/(.+)$", re.IGNORECASE)
+USERNAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+
+
+def normalize_channel_id(raw: str) -> str:
+    """Приводим CHANNEL_ID из .env к тому виду, который понимает Bot API.
+
+    Понимаем: -1001234567890, @имя, имя, t.me/имя, https://t.me/имя,
+    ссылку на пост https://t.me/имя/123, веб-версию https://t.me/s/имя
+    и ссылку на пост приватного канала https://t.me/c/1234567890/56.
+    """
+    value = raw.strip()
+    if not value:
+        return value
+
+    if re.fullmatch(r"-?\d+", value):   # уже готовый числовой id
+        return value
+
+    link = TME_LINK.match(value)
+    if link:
+        parts = [p for p in link.group(1).split("?")[0].strip("/").split("/") if p]
+        head = parts[0] if parts else ""
+
+        # ссылка-приглашение: Bot API не умеет разворачивать invite-хеш в chat_id
+        if head.startswith("+") or head.lower() == "joinchat":
+            raise SystemExit(
+                "CHANNEL_ID: ссылка-приглашение (t.me/+…) не подходит — Telegram не даёт\n"
+                "ботам определить канал по ней.\n"
+                "Для приватного канала: открой любой пост в канале → «Копировать ссылку»,\n"
+                "получится https://t.me/c/1234567890/56 — вставь её целиком, я разберу.\n"
+                "Для публичного канала подойдёт обычная ссылка https://t.me/имя_канала."
+            )
+
+        # приватный канал: t.me/c/<internal_id>/<message_id> -> -100<internal_id>
+        if head.lower() == "c":
+            if len(parts) >= 2 and parts[1].isdigit():
+                return f"-100{parts[1]}"
+            raise SystemExit(
+                f"CHANNEL_ID: «{raw}» похоже на ссылку приватного канала, но в ней нет id.\n"
+                "Нужен вид https://t.me/c/1234567890/56 — скопируй ссылку на любой пост."
+            )
+
+        # t.me/s/имя — веб-версия канала
+        if head.lower() == "s" and len(parts) >= 2:
+            head = parts[1]
+
+        value = head
+
+    value = value.lstrip("@")
+    if not USERNAME.fullmatch(value):
+        raise SystemExit(
+            f"CHANNEL_ID: «{raw}» — не похоже ни на @имя канала, ни на id, ни на ссылку t.me.\n"
+            "Примеры: @moy_kanal | https://t.me/moy_kanal | -1001234567890"
+        )
+    return "@" + value
+
+
 def check_config() -> None:
     missing = [
         name
@@ -64,6 +121,8 @@ def check_config() -> None:
         raise SystemExit(
             "Не заполнено в .env: " + ", ".join(missing) + "\nСмотри README.md, шаг 2."
         )
+    # дальше по коду CHANNEL_ID уходит в Telegram как есть — нормализуем один раз здесь
+    config.CHANNEL_ID = normalize_channel_id(config.CHANNEL_ID)
 
 
 def retry(fn, *, attempts: int = 4, base_delay: float = 4.0, what: str = "запрос"):
@@ -312,11 +371,36 @@ def run_once(dry_run: bool = False) -> None:
     save_history(history)
 
 
+def check_post_rights(bot_id: int, chat: dict) -> None:
+    """getChat отвечает и постороннему боту — реальные права смотрим отдельно.
+
+    Без этой проверки --check говорит «всё в порядке», а первый же пост
+    падает с «not enough rights» молча, в 09:30 и только в bot.log.
+    """
+    member = telegram_call(
+        "getChatMember", {"chat_id": config.CHANNEL_ID, "user_id": bot_id}
+    )
+    status = member.get("status")
+    if status not in ("administrator", "creator"):
+        raise SystemExit(
+            f"Бот добавлен в канал со статусом «{status}», а нужен администратор.\n"
+            "Настройки канала → Администраторы → Добавить администратора → выбери бота."
+        )
+    # can_post_messages приходит только для каналов, в группах поля нет
+    if chat.get("type") == "channel" and not member.get("can_post_messages"):
+        raise SystemExit(
+            "Бот — администратор, но без права «Публикация сообщений».\n"
+            "Настройки канала → Администраторы → выбери бота → включи «Публикация сообщений»."
+        )
+    log.info("Права на публикацию: есть")
+
+
 def do_check() -> None:
     me = telegram_call("getMe", {})
     log.info("Бот: @%s", me["username"])
     chat = telegram_call("getChat", {"chat_id": config.CHANNEL_ID})
     log.info("Канал: %s (id=%s)", chat.get("title"), chat.get("id"))
+    check_post_rights(me["id"], chat)
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     client.messages.create(
