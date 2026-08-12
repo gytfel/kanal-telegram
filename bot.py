@@ -125,12 +125,18 @@ def check_config() -> None:
     config.CHANNEL_ID = normalize_channel_id(config.CHANNEL_ID)
 
 
+class PermanentError(RuntimeError):
+    """Ошибку бессмысленно повторять: неверный запрос, нет прав, не тот канал."""
+
+
 def retry(fn, *, attempts: int = 4, base_delay: float = 4.0, what: str = "запрос"):
     """Повтор с нарастающей паузой — сеть и API иногда моргают."""
     last = None
     for i in range(1, attempts + 1):
         try:
             return fn()
+        except PermanentError:
+            raise  # повторять нечего, ответ не изменится
         except Exception as exc:  # noqa: BLE001 — нам важно не упасть насовсем
             last = exc
             if i == attempts:
@@ -310,7 +316,11 @@ def telegram_call(method: str, payload: dict) -> dict:
             raise RuntimeError("flood control")
         data = r.json()
         if not data.get("ok"):
-            raise RuntimeError(f"Telegram: {data.get('description')}")
+            message = f"Telegram: {data.get('description')}"
+            # 4xx — это про сам запрос: токен, канал, права. Повтор не поможет.
+            if 400 <= r.status_code < 500:
+                raise PermanentError(message)
+            raise RuntimeError(message)
         return data["result"]
 
     return retry(call, what=f"Telegram {method}")
@@ -377,9 +387,26 @@ def check_post_rights(bot_id: int, chat: dict) -> None:
     Без этой проверки --check говорит «всё в порядке», а первый же пост
     падает с «not enough rights» молча, в 09:30 и только в bot.log.
     """
-    member = telegram_call(
-        "getChatMember", {"chat_id": config.CHANNEL_ID, "user_id": bot_id}
-    )
+    try:
+        member = telegram_call(
+            "getChatMember", {"chat_id": config.CHANNEL_ID, "user_id": bot_id}
+        )
+    except PermanentError as exc:
+        # Список участников канала виден только администраторам. Если Telegram
+        # его не отдаёт — бот админом не является либо его тут вообще нет.
+        if "member list is inaccessible" in str(exc).lower():
+            raise SystemExit(
+                "Telegram не показывает участников канала — значит бот не администратор.\n"
+                f"Канал: {chat.get('title')} (CHANNEL_ID={config.CHANNEL_ID})\n\n"
+                "Проверь по порядку:\n"
+                "  1. Это точно твой канал, а не чужой с похожим именем?\n"
+                "  2. Настройки канала → Администраторы → бот есть в списке?\n"
+                "     Добавлять нужно именно того бота, чей токен лежит в .env.\n"
+                "  3. У него включено право «Публикация сообщений»?\n\n"
+                "Добавь бота администратором и запусти ./install.sh снова."
+            ) from exc
+        raise
+
     status = member.get("status")
     if status not in ("administrator", "creator"):
         raise SystemExit(
