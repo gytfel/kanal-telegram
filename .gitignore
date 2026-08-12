@@ -1,0 +1,12 @@
+# Секреты — НИКОГДА не коммитить
+.env
+
+# Данные и логи бота
+history.json
+bot.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
