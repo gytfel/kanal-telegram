@@ -58,31 +58,31 @@ python bot.py             # рабочий режим: постит по рас�
 
 Скрипт постит, только пока запущен. На домашнем ноутбуке он умрёт вместе с крышкой — нужен сервер (подойдёт самая дешёвая VPS).
 
-**systemd (Linux, рекомендую)** — создай `/etc/systemd/system/tgbot.service`:
-
-```ini
-[Unit]
-Description=Telegram autopost
-After=network.target
-
-[Service]
-WorkingDirectory=/home/user/tg_autopost
-ExecStart=/usr/bin/python3 /home/user/tg_autopost/bot.py
-Restart=always
-RestartSec=30
-User=user
-
-[Install]
-WantedBy=multi-user.target
-```
+**Установка на VPS одной командой.** Подключись к серверу по SSH и выполни:
 
 ```bash
-sudo systemctl enable --now tgbot
-sudo systemctl status tgbot     # проверить
-journalctl -u tgbot -f          # смотреть логи
+sudo apt update && sudo apt install -y python3 python3-venv git
+git clone https://github.com/gytfel/kanal-telegram.git
+cd kanal-telegram
+./install.sh
+```
+
+`install.sh` сделает всё сам: проверит версию Python, создаст виртуальное окружение, поставит зависимости, спросит три ключа и запишет их в `.env` с правами 600, прогонит `--check` и предложит поставить автозапуск через systemd. Скрипт идемпотентный — можно запускать повторно, уже сделанное он не трогает.
+
+Не забудь **до** запуска добавить бота администратором канала с правом «Публикация сообщений»: `--check` внутри установщика это проверяет и не даст поставить сервис, который всё равно не сможет постить.
+
+Управление после установки:
+
+```bash
+sudo systemctl status tgbot      # состояние
+sudo journalctl -u tgbot -f      # живой лог
+sudo systemctl restart tgbot     # перечитать config.py после правок
+sudo systemctl stop tgbot        # остановить
 ```
 
 Поднимется сам после перезагрузки сервера и после любого падения.
+
+Флаги на случай неинтерактивной установки: `./install.sh --service` — поставить сервис молча, `./install.sh --no-service` — только окружение и ключи.
 
 **Docker** — если привычнее:
 
