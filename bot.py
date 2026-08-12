@@ -312,11 +312,36 @@ def run_once(dry_run: bool = False) -> None:
     save_history(history)
 
 
+def check_post_rights(bot_id: int, chat: dict) -> None:
+    """getChat отвечает и постороннему боту — реальные права смотрим отдельно.
+
+    Без этой проверки --check говорит «всё в порядке», а первый же пост
+    падает с «not enough rights» молча, в 09:30 и только в bot.log.
+    """
+    member = telegram_call(
+        "getChatMember", {"chat_id": config.CHANNEL_ID, "user_id": bot_id}
+    )
+    status = member.get("status")
+    if status not in ("administrator", "creator"):
+        raise SystemExit(
+            f"Бот добавлен в канал со статусом «{status}», а нужен администратор.\n"
+            "Настройки канала → Администраторы → Добавить администратора → выбери бота."
+        )
+    # can_post_messages приходит только для каналов, в группах поля нет
+    if chat.get("type") == "channel" and not member.get("can_post_messages"):
+        raise SystemExit(
+            "Бот — администратор, но без права «Публикация сообщений».\n"
+            "Настройки канала → Администраторы → выбери бота → включи «Публикация сообщений»."
+        )
+    log.info("Права на публикацию: есть")
+
+
 def do_check() -> None:
     me = telegram_call("getMe", {})
     log.info("Бот: @%s", me["username"])
     chat = telegram_call("getChat", {"chat_id": config.CHANNEL_ID})
     log.info("Канал: %s (id=%s)", chat.get("title"), chat.get("id"))
+    check_post_rights(me["id"], chat)
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     client.messages.create(

@@ -39,7 +39,7 @@ pip install -r requirements.txt
 ## Шаг 4. Проверка и запуск
 
 ```bash
-python bot.py --check     # проверить, что все три ключа рабочие
+python bot.py --check     # три ключа + права бота на публикацию в канале
 python bot.py --dry-run   # показать пост в консоли, никуда не отправляя
 python bot.py --now       # опубликовать один пост прямо сейчас
 python bot.py             # рабочий режим: постит по расписанию
@@ -105,7 +105,7 @@ docker build -t tgbot . && docker run -d --restart=always --env-file .env tgbot
 | Симптом | Причина |
 |---|---|
 | `chat not found` | бот не добавлен в канал админом, или неверный `CHANNEL_ID` |
-| `not enough rights` | у бота в админке нет права «Публикация сообщений» |
+| `not enough rights` | у бота в админке нет права «Публикация сообщений» (ловится `--check`) |
 | `invalid x-api-key` | ключ Anthropic скопирован с пробелом или отозван |
 | `credit balance is too low` | не привязана карта в консоли |
 | посты повторяются | расширь `RUBRICS` и подробнее опиши `CHANNEL_TOPIC` |
