@@ -1,0 +1,4 @@
+# Переименуй этот файл в .env и вставь свои значения
+TELEGRAM_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CHANNEL_ID=@moy_kanal
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
